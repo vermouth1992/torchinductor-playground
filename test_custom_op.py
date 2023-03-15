@@ -1,5 +1,3 @@
-import copy
-
 import torch
 
 print(torch.__version__)
@@ -31,17 +29,37 @@ def pattern(x):
 replacement = torch.fx.symbolic_trace(my_sigmoid)
 replacement.graph.print_tabular()
 
+
+def replace_sigmoid(gm: torch.fx.GraphModule):
+    graph = gm.graph
+    for node in graph.nodes:
+        if node.op == 'call_function' and node.target == torch.sigmoid:
+            with graph.inserting_after(node):
+                # Insert a new `call_function` node calling `torch.relu`
+                new_node = graph.call_function(
+                    my_sigmoid, args=tuple(node.all_input_nodes))
+
+                # We want all places that used the value of `node` to
+                # now use that value after the `relu` call we've added.
+                # We use the `replace_all_uses_with` API to do this.
+                node.replace_all_uses_with(new_node)
+
+            graph.erase_node(node)
+
+    graph.lint()
+    gm.recompile()
+    return gm
+
+
 def replace_pattern_backend(gm: torch.fx.GraphModule, input):
     gm.graph.print_tabular()
-    torch.fx.replace_pattern(gm, pattern=pattern, replacement=replacement)
+    gm = replace_sigmoid(gm)
     gm.graph.print_tabular()
     return gm
 
 
 def replace_pattern_backend_with_inductor(gm: torch.fx.GraphModule, input):
-    torch.fx.replace_pattern(gm, pattern=pattern, replacement=replacement)
-    gm.graph.lint()
-    gm.recompile()
+    gm = replace_sigmoid(gm)
     from torch._inductor.compile_fx import compile_fx
     gm.graph.print_tabular()
     optimized_forward = compile_fx(gm, example_inputs_=input)
